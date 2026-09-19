@@ -1,3 +1,4 @@
+import Image from "next/image";
 import { cn } from "@/lib/utils";
 
 export function BrandLogo({
@@ -9,11 +10,20 @@ export function BrandLogo({
 }) {
   return (
     <span
-      className={cn("flex shrink-0 items-center justify-center rounded-sm border border-slate-200 bg-white px-2", className)}
+      className={cn(
+        "relative flex shrink-0 items-center justify-center overflow-hidden",
+        className,
+      )}
       aria-label="PT Nurfita Karya Mandiri"
-      data-priority={priority ? "true" : undefined}
     >
-      <span className="font-serif text-sm font-bold tracking-tight text-[#0e1111]">NK</span>
+      <Image
+        src="/nurfita-logo.png"
+        alt="PT Nurfita Karya Mandiri"
+        fill
+        sizes="(max-width: 640px) 72px, 112px"
+        priority={priority}
+        className="object-contain"
+      />
     </span>
   );
 }
