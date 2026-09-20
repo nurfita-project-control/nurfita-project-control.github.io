@@ -4,6 +4,7 @@ export type StoredEntry = {
   category: string;
   wing: "Selatan" | "Utara" | "Umum";
   zone: string;
+  targetScopeId?: string;
   wbsCode: string | null;
   itemName: string;
   quantity: number;

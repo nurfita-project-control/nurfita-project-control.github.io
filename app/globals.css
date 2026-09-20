@@ -83,14 +83,41 @@
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
-* { border-color: var(--border); }
+* { box-sizing: border-box; border-color: var(--border); }
+html, body {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: Inter, "Segoe UI", Arial, Helvetica, sans-serif;
   -webkit-tap-highlight-color: transparent;
 }
-.field-control { min-height: 3rem; border-radius: 0.2rem; font-size: 1rem; }
+.field-control {
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  min-height: 3rem;
+  border-radius: 0.2rem;
+  font-size: 1rem;
+}
+[data-slot="card"],
+[data-slot="card-header"],
+[data-slot="card-content"],
+[data-slot="select-trigger"] {
+  min-width: 0;
+  max-width: 100%;
+}
+[data-slot="select-trigger"] {
+  width: 100%;
+  overflow: hidden;
+}
+input, select, textarea {
+  min-width: 0;
+  max-width: 100%;
+}
 button, a, input, select, textarea { touch-action: manipulation; }
 .font-serif { font-family: Georgia, "Times New Roman", serif; }
 .eyebrow {
@@ -146,6 +173,8 @@ button, a, input, select, textarea { touch-action: manipulation; }
 }
 
 @media (max-width: 639px) {
+  [data-slot="card-header"], [data-slot="card-content"] { padding-left: 1rem; padding-right: 1rem; }
+  input[type="date"] { appearance: none; -webkit-appearance: none; }
   .report-sheet { padding: 1rem; }
   .report-kpi { padding: 0.65rem 0.75rem; }
   .report-kpi strong { font-size: 0.95rem; line-height: 1.25; }

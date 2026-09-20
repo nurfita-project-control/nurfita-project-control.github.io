@@ -7,8 +7,11 @@ import {
   Camera,
   ClipboardList,
   FileText,
+  FolderOpen,
   ImageIcon,
+  LogIn,
   Loader2,
+  Mail,
   MapPinned,
   Plus,
   Printer,
@@ -16,8 +19,10 @@ import {
   ShieldCheck,
   Sprout,
   Truck,
+  UserRound,
 } from "lucide-react";
 import Image from "next/image";
+import type { User } from "@supabase/supabase-js";
 import {
   CartesianGrid,
   Line,
@@ -49,11 +54,16 @@ import {
   phaseOnePlants,
   phaseOneTotal,
   plannedProgress,
-  polybagTotal,
-  treeTotal,
   truckCapacity,
-  zones,
 } from "@/lib/project-data";
+import {
+  allRequirementScopes,
+  contractAreaScopes,
+  normalizePlantName,
+  phaseOneScopeId,
+  plantUnitTotal,
+  scopeById,
+} from "@/lib/rab-data";
 import {
   fileToDataUrl,
   readEntries,
@@ -61,21 +71,41 @@ import {
   subscribeEntries,
   type StoredEntry,
 } from "@/lib/client-storage";
+import { getSupabaseClient, isSupabaseConfigured } from "@/lib/supabase-client";
 
-type TabValue = "dashboard" | "input" | "recap" | "report";
+type TabValue = "dashboard" | "input" | "recap" | "report" | "account";
 type IconType = typeof BarChart3;
 
 const navItems: Array<{ value: TabValue; label: string; icon: IconType }> = [
   { value: "dashboard", label: "Ringkasan", icon: BarChart3 },
   { value: "input", label: "Input Harian", icon: Plus },
-  { value: "recap", label: "Rekap Tahap 1", icon: Sprout },
+  { value: "recap", label: "Kebutuhan", icon: Sprout },
   { value: "report", label: "Laporan HK", icon: FileText },
 ];
 
-const emptyForm = {
+const accountNavItem = { value: "account" as const, label: "Akun Saya", icon: UserRound };
+
+type DailyForm = {
+  entryDate: string;
+  category: string;
+  wing: "Selatan" | "Utara" | "Umum";
+  zone: string;
+  wbsCode: string;
+  itemName: string;
+  quantity: string;
+  unit: string;
+  completion: string;
+  workers: string;
+  status: string;
+  notes: string;
+  hkVisible: boolean;
+  targetScopeId: string;
+};
+
+const emptyForm: DailyForm = {
   entryDate: contract.fieldStart,
   category: "preparation",
-  wing: "Selatan" as const,
+  wing: "Selatan",
   zone: phaseOneAreas[0] as string,
   wbsCode: "P1-01",
   itemName: "Toolbox meeting dan mobilisasi lapangan",
@@ -86,6 +116,7 @@ const emptyForm = {
   status: "Dilaksanakan",
   notes: "",
   hkVisible: true,
+  targetScopeId: phaseOneScopeId,
 };
 
 function cx(...values: Array<string | false | undefined>) {
@@ -109,11 +140,28 @@ function actualProgress(entries: StoredEntry[], until?: string) {
   );
 }
 
-function plantTotals(entries: StoredEntry[], category: "plant_delivery" | "plant_installation") {
+function entryMatchesScope(entry: StoredEntry, scopeId: string) {
+  if (scopeId === "sayap-selatan" || scopeId === "sayap-utara") {
+    const wantedWing = scopeId === "sayap-selatan" ? "Selatan" : "Utara";
+    if (entry.targetScopeId) return scopeById(entry.targetScopeId).wing === wantedWing;
+    return entry.wing === wantedWing;
+  }
+  if (entry.targetScopeId) return entry.targetScopeId === scopeId;
+  return scopeId === phaseOneScopeId && phaseOneAreas.includes(entry.zone as (typeof phaseOneAreas)[number]);
+}
+
+function plantTotals(
+  entries: StoredEntry[],
+  category: "plant_delivery" | "plant_installation",
+  scopeId?: string,
+) {
   const totals = new Map<string, number>();
   entries
-    .filter((entry) => entry.category === category)
-    .forEach((entry) => totals.set(entry.itemName, (totals.get(entry.itemName) || 0) + entry.quantity));
+    .filter((entry) => entry.category === category && (!scopeId || entryMatchesScope(entry, scopeId)))
+    .forEach((entry) => {
+      const name = normalizePlantName(entry.itemName);
+      totals.set(name, (totals.get(name) || 0) + entry.quantity);
+    });
   return totals;
 }
 
@@ -172,10 +220,12 @@ export default function ProjectControl() {
   const plan = plannedProgress(new Date());
   const actual = useMemo(() => actualProgress(entries), [entries]);
   const deviation = actual - plan;
-  const soilM3 = entries.filter((entry) => entry.category === "soil").reduce((sum, entry) => sum + entry.quantity, 0);
+  const soilM3 = entries
+    .filter((entry) => entry.category === "soil" && entryMatchesScope(entry, phaseOneScopeId))
+    .reduce((sum, entry) => sum + entry.quantity, 0);
   const soilRit = soilM3 > 0 ? Math.ceil(soilM3 / truckCapacity) : 0;
-  const delivered = useMemo(() => plantTotals(entries, "plant_delivery"), [entries]);
-  const installed = useMemo(() => plantTotals(entries, "plant_installation"), [entries]);
+  const delivered = useMemo(() => plantTotals(entries, "plant_delivery", phaseOneScopeId), [entries]);
+  const installed = useMemo(() => plantTotals(entries, "plant_installation", phaseOneScopeId), [entries]);
   const deliveredTotal = [...delivered.values()].reduce((sum, value) => sum + value, 0);
   const installedTotal = [...installed.values()].reduce((sum, value) => sum + value, 0);
 
@@ -196,7 +246,7 @@ export default function ProjectControl() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const current = navItems.find((item) => item.value === active) || navItems[0];
+  const current = [...navItems, accountNavItem].find((item) => item.value === active) || navItems[0];
   const CurrentIcon = current.icon;
 
   return (
@@ -248,14 +298,27 @@ export default function ProjectControl() {
                 <div className="truncate font-serif text-lg font-semibold">{current.label}</div>
               </div>
             </div>
-            <a
-              href="/hk/"
-              className="inline-flex min-h-11 items-center gap-2 rounded-sm border border-slate-300 bg-white px-3 text-xs font-semibold text-[#0e1111] hover:bg-slate-50"
-            >
-              <ShieldCheck className="size-4" />
-              <span className="hidden sm:inline">Lihat Portal HK</span>
-              <span className="sm:hidden">HK</span>
-            </a>
+            <div className="flex shrink-0 items-center gap-2">
+              <a
+                href="/hk/"
+                className="inline-flex size-11 items-center justify-center rounded-sm border border-slate-300 bg-white text-[#0e1111] hover:bg-slate-50 sm:w-auto sm:px-3"
+                aria-label="Lihat Portal HK"
+              >
+                <ShieldCheck className="size-4" />
+                <span className="ml-2 hidden text-xs font-semibold sm:inline">Portal HK</span>
+              </a>
+              <button
+                type="button"
+                onClick={() => go("account")}
+                className={cx(
+                  "grid size-11 place-items-center rounded-full border text-sm font-bold",
+                  active === "account" ? "border-[#17365d] bg-[#17365d] text-white" : "border-slate-300 bg-white text-[#0e1111]",
+                )}
+                aria-label="Buka dashboard pengguna"
+              >
+                PC
+              </button>
+            </div>
           </div>
         </header>
 
@@ -282,6 +345,7 @@ export default function ProjectControl() {
           {active === "input" && <DailyInput onSaved={(entry) => { setEntries((currentEntries) => [entry, ...currentEntries]); go("dashboard"); }} />}
           {active === "recap" && <PhaseOneRecap entries={entries} delivered={delivered} installed={installed} />}
           {active === "report" && <HKReport entries={entries.filter((entry) => entry.hkVisible)} plan={plan} actual={actual} />}
+          {active === "account" && <UserDashboard />}
         </main>
       </section>
 
@@ -429,6 +493,9 @@ function DailyInput({ onSaved }: { onSaved: (entry: StoredEntry) => void }) {
 
   const isPlant = form.category === "plant_delivery" || form.category === "plant_installation";
   const isProgress = form.category === "progress";
+  const selectedScope = scopeById(form.targetScopeId);
+  const availablePlants = selectedScope.plants;
+  const availableZones = form.targetScopeId === phaseOneScopeId ? [...phaseOneAreas] : [selectedScope.name];
 
   const chooseCategory = (category: string) => {
     if (category === "soil") {
@@ -436,7 +503,7 @@ function DailyInput({ onSaved }: { onSaved: (entry: StoredEntry) => void }) {
       return;
     }
     if (category === "plant_delivery" || category === "plant_installation") {
-      const plant = phaseOnePlants[0];
+      const plant = availablePlants[0] || phaseOnePlants[0];
       setForm((current) => ({ ...current, category, itemName: plant.name, unit: plant.unit, quantity: "0" }));
       return;
     }
@@ -448,8 +515,21 @@ function DailyInput({ onSaved }: { onSaved: (entry: StoredEntry) => void }) {
   };
 
   const choosePlant = (name: string) => {
-    const plant = phaseOnePlants.find((item) => item.name === name);
+    const plant = availablePlants.find((item) => item.name === name);
     setForm((current) => ({ ...current, itemName: name, unit: plant?.unit || "polybag" }));
+  };
+
+  const chooseScope = (targetScopeId: string) => {
+    const scope = scopeById(targetScopeId);
+    const nextPlant = scope.plants[0];
+    setForm((current) => ({
+      ...current,
+      targetScopeId,
+      wing: scope.wing,
+      zone: targetScopeId === phaseOneScopeId ? phaseOneAreas[0] : scope.name,
+      itemName: isPlant && nextPlant ? nextPlant.name : current.itemName,
+      unit: isPlant && nextPlant ? nextPlant.unit : current.unit,
+    }));
   };
 
   const submit = async (event: FormEvent) => {
@@ -468,6 +548,7 @@ function DailyInput({ onSaved }: { onSaved: (entry: StoredEntry) => void }) {
         category: form.category,
         wing: form.wing,
         zone: form.zone,
+        targetScopeId: form.targetScopeId,
         wbsCode: isProgress ? form.wbsCode : null,
         itemName: form.itemName.trim(),
         quantity: numberOf(form.quantity),
@@ -502,12 +583,12 @@ function DailyInput({ onSaved }: { onSaved: (entry: StoredEntry) => void }) {
       </div>
 
       <form onSubmit={submit}>
-        <Card className="rounded-md border-slate-200 shadow-none">
+        <Card className="min-w-0 overflow-hidden rounded-md border-slate-200 shadow-none">
           <CardHeader className="border-b border-slate-100">
             <CardTitle className="font-serif text-xl">Catatan Baru</CardTitle>
             <CardDescription>Isi data yang sudah terverifikasi di lapangan.</CardDescription>
           </CardHeader>
-          <CardContent className="grid gap-5 py-5 sm:grid-cols-2">
+          <CardContent className="grid min-w-0 gap-5 px-4 py-5 sm:grid-cols-2 sm:px-6">
             <Field label="Tanggal">
               <Input type="date" value={form.entryDate} onChange={(event) => setForm({ ...form, entryDate: event.target.value })} className="field-control" required />
             </Field>
@@ -517,10 +598,22 @@ function DailyInput({ onSaved }: { onSaved: (entry: StoredEntry) => void }) {
                 <SelectContent>{Object.entries(categoryLabels).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent>
               </Select>
             </Field>
-            <Field label="Area / zona" wide>
+            <Field label="Target RAB / cakupan kontrol" wide>
+              <Select value={form.targetScopeId} onValueChange={chooseScope}>
+                <SelectTrigger className="field-control w-full"><SelectValue /></SelectTrigger>
+                <SelectContent className="max-w-[calc(100vw-2rem)]">
+                  {allRequirementScopes.map((scope) => (
+                    <SelectItem key={scope.id} value={scope.id}>
+                      {scope.source === "Tahap 1" ? "TAHAP 1" : `${scope.wing.toUpperCase()} · ${scope.code}`} — {scope.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="Area / zona lapangan" wide>
               <Select value={form.zone} onValueChange={(value) => setForm({ ...form, zone: value })}>
                 <SelectTrigger className="field-control w-full"><SelectValue /></SelectTrigger>
-                <SelectContent>{zones.map((zone) => <SelectItem key={zone} value={zone}>{zone}</SelectItem>)}</SelectContent>
+                <SelectContent className="max-w-[calc(100vw-2rem)]">{availableZones.map((zone) => <SelectItem key={zone} value={zone}>{zone}</SelectItem>)}</SelectContent>
               </Select>
             </Field>
 
@@ -543,7 +636,7 @@ function DailyInput({ onSaved }: { onSaved: (entry: StoredEntry) => void }) {
               <Field label="Jenis tanaman" wide>
                 <Select value={form.itemName} onValueChange={choosePlant}>
                   <SelectTrigger className="field-control w-full"><SelectValue /></SelectTrigger>
-                  <SelectContent>{phaseOnePlants.map((plant) => <SelectItem key={plant.name} value={plant.name}>{plant.name} · target {formatNumber(plant.quantity)} {plant.unit}</SelectItem>)}</SelectContent>
+                  <SelectContent className="max-w-[calc(100vw-2rem)]">{availablePlants.map((plant) => <SelectItem key={`${plant.name}-${plant.unit}`} value={plant.name}>{plant.name} · target {formatNumber(plant.quantity)} {plant.unit}</SelectItem>)}</SelectContent>
                 </Select>
               </Field>
             ) : (
@@ -576,11 +669,21 @@ function DailyInput({ onSaved }: { onSaved: (entry: StoredEntry) => void }) {
               <Textarea value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} placeholder="Cuaca, hasil inspeksi, kendala, instruksi HK, atau rencana besok." className="min-h-28 rounded-sm text-base sm:text-sm" />
             </Field>
             <Field label="Foto lapangan" wide>
-              <label className="flex min-h-24 cursor-pointer items-center gap-4 rounded-sm border border-dashed border-slate-300 bg-slate-50 px-4 py-3">
-                <span className="grid size-10 shrink-0 place-items-center rounded-sm bg-white"><Camera className="size-5" /></span>
-                <span className="min-w-0 text-sm"><strong className="block">Ambil atau pilih foto</strong><span className="mt-1 block truncate text-xs text-[#232b2b]">{photo?.name || "Kamera Android dapat dibuka dari tombol ini."}</span></span>
-                <Input type="file" accept="image/*" capture="environment" className="sr-only" onChange={(event) => setPhoto(event.target.files?.[0] || null)} />
-              </label>
+              <div className="grid min-w-0 grid-cols-2 gap-3">
+                <label className="flex min-h-20 min-w-0 cursor-pointer flex-col items-center justify-center gap-2 rounded-sm border border-slate-300 bg-slate-50 px-2 py-3 text-center text-xs font-semibold">
+                  <Camera className="size-5" />
+                  Ambil kamera
+                  <Input type="file" accept="image/*" capture="environment" className="sr-only" onChange={(event) => setPhoto(event.target.files?.[0] || null)} />
+                </label>
+                <label className="flex min-h-20 min-w-0 cursor-pointer flex-col items-center justify-center gap-2 rounded-sm border border-slate-300 bg-slate-50 px-2 py-3 text-center text-xs font-semibold">
+                  <FolderOpen className="size-5" />
+                  Pilih galeri / file
+                  <Input type="file" accept="image/jpeg,image/png,image/webp" className="sr-only" onChange={(event) => setPhoto(event.target.files?.[0] || null)} />
+                </label>
+              </div>
+              <div className="min-w-0 rounded-sm bg-[#eef9fd] px-3 py-2 text-xs leading-5 text-[#232b2b]">
+                {photo ? <><strong className="text-[#0e1111]">Foto dipilih:</strong> <span className="break-all">{photo.name}</span></> : "Belum ada foto dipilih. Kamera dan file galeri tersedia terpisah."}
+              </div>
             </Field>
             <div className="flex items-start gap-3 sm:col-span-2">
               <Checkbox id="hk-visible" checked={form.hkVisible} onCheckedChange={(checked) => setForm({ ...form, hkVisible: checked === true })} className="mt-0.5" />
@@ -600,59 +703,173 @@ function DailyInput({ onSaved }: { onSaved: (entry: StoredEntry) => void }) {
 }
 
 function Field({ label, wide = false, children }: { label: string; wide?: boolean; children: React.ReactNode }) {
-  return <div className={cx("space-y-2", wide && "sm:col-span-2")}><Label>{label}</Label>{children}</div>;
+  return <div className={cx("min-w-0 space-y-2", wide && "sm:col-span-2")}><Label>{label}</Label>{children}</div>;
 }
 
 function PhaseOneRecap({
   entries,
-  delivered,
-  installed,
+  delivered: phaseOneDelivered,
+  installed: phaseOneInstalled,
 }: {
   entries: StoredEntry[];
   delivered: Map<string, number>;
   installed: Map<string, number>;
 }) {
+  const [scopeId, setScopeId] = useState(phaseOneScopeId);
+  const scope = scopeById(scopeId);
+  const delivered = scopeId === phaseOneScopeId
+    ? phaseOneDelivered
+    : plantTotals(entries, "plant_delivery", scopeId);
+  const installed = scopeId === phaseOneScopeId
+    ? phaseOneInstalled
+    : plantTotals(entries, "plant_installation", scopeId);
+  const soilActual = entries
+    .filter((entry) => entry.category === "soil" && entryMatchesScope(entry, scopeId))
+    .reduce((sum, entry) => sum + entry.quantity, 0);
+  const soilTarget = scope.soilM3;
+  const areaCards = scopeId === phaseOneScopeId
+    ? []
+    : contractAreaScopes.filter((area) => area.wing === scope.wing);
+  const targetBatang = plantUnitTotal(scope.plants, "batang");
+  const targetPolybag = plantUnitTotal(scope.plants, "polybag");
+  const targetM2 = plantUnitTotal(scope.plants, "m2");
+
   return (
     <div className="space-y-5">
       <div>
-        <p className="eyebrow">Area merah · mulai 21 September 2026</p>
-        <h1 className="page-title">Rekap Tahap 1</h1>
-        <p className="mt-2 text-sm leading-6 text-[#232b2b]">Target lapangan: {formatNumber(phaseOneTotal)} unit — {formatNumber(treeTotal)} batang dan {formatNumber(polybagTotal)} polybag.</p>
+        <p className="eyebrow">Kontrol kebutuhan berdasarkan RAB</p>
+        <h1 className="page-title">Tanah & Tanaman</h1>
+        <p className="mt-2 text-sm leading-6 text-[#232b2b]">Bandingkan target, penerimaan, pemasangan, dan kekurangan per area maupun total sayap.</p>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-        {phaseOneAreas.map((area, index) => {
-          const count = entries.filter((entry) => entry.zone === area).length;
-          return (
-            <Card key={area} className="rounded-md border-slate-200 py-4 shadow-none">
-              <CardContent className="px-4">
-                <div className="flex items-start justify-between gap-3"><span className="grid size-7 shrink-0 place-items-center rounded-sm bg-slate-100 font-mono text-xs">0{index + 1}</span><Badge variant="outline" className="rounded-sm text-[10px]">{count} update</Badge></div>
-                <p className="mt-3 text-sm font-semibold leading-5">{area}</p>
-              </CardContent>
-            </Card>
-          );
-        })}
+      <div className="grid min-w-0 grid-cols-3 gap-2">
+        {[
+          [phaseOneScopeId, "Tahap 1"],
+          ["sayap-selatan", "Selatan"],
+          ["sayap-utara", "Utara"],
+        ].map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => setScopeId(id)}
+            className={cx(
+              "min-h-12 min-w-0 rounded-sm border px-2 text-xs font-bold",
+              scopeId === id ? "border-[#17365d] bg-[#17365d] text-white" : "border-slate-300 bg-white text-[#0e1111]",
+            )}
+          >
+            {label}
+          </button>
+        ))}
       </div>
 
-      <Card className="rounded-md border-slate-200 shadow-none">
-        <CardHeader className="border-b border-slate-100">
-          <CardTitle className="font-serif text-xl">Kontrol Tanaman</CardTitle>
-          <CardDescription>Penerimaan dan pemasangan dihitung otomatis dari input harian.</CardDescription>
+      <Card className="min-w-0 overflow-hidden rounded-md border-slate-200 shadow-none">
+        <CardContent className="grid min-w-0 gap-4 py-5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+          <Field label="Pilih area RAB">
+            <Select value={scopeId} onValueChange={setScopeId}>
+              <SelectTrigger className="field-control w-full"><SelectValue /></SelectTrigger>
+              <SelectContent className="max-w-[calc(100vw-2rem)]">
+                <SelectItem value={phaseOneScopeId}>TAHAP 1 — lima area merah</SelectItem>
+                <SelectItem value="sayap-selatan">SELATAN — total seluruh sayap</SelectItem>
+                {contractAreaScopes.filter((item) => item.wing === "Selatan").map((item) => <SelectItem key={item.id} value={item.id}>SELATAN · {item.code} — {item.name}</SelectItem>)}
+                <SelectItem value="sayap-utara">UTARA — total seluruh sayap</SelectItem>
+                {contractAreaScopes.filter((item) => item.wing === "Utara").map((item) => <SelectItem key={item.id} value={item.id}>UTARA · {item.code} — {item.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </Field>
+          <Badge variant="outline" className="h-fit w-fit rounded-sm px-3 py-2">Sumber: {scope.source}</Badge>
+        </CardContent>
+      </Card>
+
+      <Card className="min-w-0 overflow-hidden rounded-md border-slate-200 shadow-none">
+        <CardHeader className="border-b border-slate-100 px-4 sm:px-6">
+          <div className="flex min-w-0 items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#232b2b]">{scope.wing} · {scope.code}</p>
+              <CardTitle className="mt-2 break-words font-serif text-xl">{scope.name}</CardTitle>
+            </div>
+            <MapPinned className="mt-1 size-5 shrink-0" />
+          </div>
         </CardHeader>
-        <CardContent className="p-0">
-          <div className="overflow-x-auto">
+        <CardContent className="grid min-w-0 grid-cols-2 gap-3 px-4 sm:grid-cols-4 sm:px-6">
+          <RequirementStat label="Tanah target" value={soilTarget == null ? "Ukur lapangan" : `${formatNumber(soilTarget)} m³`} />
+          <RequirementStat label="Tanah masuk" value={`${formatNumber(soilActual)} m³`} warning={soilTarget != null && soilActual < soilTarget} />
+          <RequirementStat label="Batang" value={formatNumber(targetBatang)} />
+          <RequirementStat label="Polybag" value={formatNumber(targetPolybag)} />
+          {targetM2 > 0 && <RequirementStat label="Tanaman m²" value={formatNumber(targetM2)} />}
+          {soilTarget != null && <RequirementStat label="Kurang tanah" value={`${formatNumber(Math.max(0, soilTarget - soilActual))} m³`} warning={soilActual < soilTarget} />}
+        </CardContent>
+      </Card>
+
+      {scopeId === phaseOneScopeId ? (
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          {phaseOneAreas.map((area, index) => {
+            const count = entries.filter((entry) => entry.zone === area).length;
+            return (
+              <Card key={area} className="min-w-0 rounded-md border-slate-200 py-4 shadow-none">
+                <CardContent className="min-w-0 px-4">
+                  <div className="flex items-start justify-between gap-3"><span className="grid size-7 shrink-0 place-items-center rounded-sm bg-slate-100 font-mono text-xs">0{index + 1}</span><Badge variant="outline" className="rounded-sm text-[10px]">{count} update</Badge></div>
+                  <p className="mt-3 break-words text-sm font-semibold leading-5">{area}</p>
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {areaCards.map((area) => {
+            const areaPlantTotal = area.plants.reduce((sum, plant) => sum + plant.quantity, 0);
+            const updates = entries.filter((entry) => entryMatchesScope(entry, area.id)).length;
+            return (
+              <button key={area.id} type="button" onClick={() => setScopeId(area.id)} className="min-w-0 text-left">
+                <Card className={cx("h-full min-w-0 rounded-md py-4 shadow-none transition-colors", scopeId === area.id ? "border-[#17365d] bg-[#eef4fa]" : "border-slate-200 bg-white")}>
+                  <CardContent className="min-w-0 px-4">
+                    <div className="flex items-start justify-between gap-3"><Badge variant="outline" className="rounded-sm">{area.code}</Badge><span className="text-[10px] text-[#232b2b]">{updates} update</span></div>
+                    <p className="mt-3 break-words text-sm font-semibold leading-5">{area.name}</p>
+                    <p className="mt-2 text-xs leading-5 text-[#232b2b]">Tanah {formatNumber(area.soilM3 || 0)} m³ · Tanaman {formatNumber(areaPlantTotal)}</p>
+                  </CardContent>
+                </Card>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      <Card className="min-w-0 overflow-hidden rounded-md border-slate-200 shadow-none">
+        <CardHeader className="border-b border-slate-100 px-4 sm:px-6">
+          <CardTitle className="font-serif text-xl">Kontrol Tanaman</CardTitle>
+          <CardDescription>“Kurang diterima” cocok untuk kebutuhan pengadaan. “Sisa pasang” cocok untuk kontrol pekerjaan.</CardDescription>
+        </CardHeader>
+        <CardContent className="min-w-0 p-0">
+          <div className="divide-y divide-slate-100 md:hidden">
+            {scope.plants.map((plant) => {
+              const name = normalizePlantName(plant.name);
+              const received = delivered.get(name) || 0;
+              const placed = installed.get(name) || 0;
+              const progress = Math.min(100, plant.quantity ? placed / plant.quantity * 100 : 0);
+              return (
+                <div key={`${name}-${plant.unit}`} className="min-w-0 p-4">
+                  <div className="flex min-w-0 items-start justify-between gap-3"><div className="min-w-0"><strong className="block break-words text-sm">{name}</strong><span className="text-[11px] text-[#232b2b]">Target {formatNumber(plant.quantity)} {plant.unit}</span></div><span className="shrink-0 font-mono text-xs">{progress.toFixed(1)}%</span></div>
+                  <Progress value={progress} className="mt-3 h-2 bg-slate-200 [&_[data-slot=progress-indicator]]:bg-[#50b8e7]" />
+                  <div className="mt-3 grid grid-cols-3 gap-2 text-center"><SmallStat label="Diterima" value={received} /><SmallStat label="Kurang" value={Math.max(0, plant.quantity - received)} warning /><SmallStat label="Sisa pasang" value={Math.max(0, plant.quantity - placed)} /></div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="hidden overflow-x-auto md:block">
             <Table>
-              <TableHeader><TableRow className="bg-slate-50"><TableHead className="min-w-48 pl-5">Jenis</TableHead><TableHead>Target</TableHead><TableHead>Diterima</TableHead><TableHead>Terpasang</TableHead><TableHead>Sisa</TableHead><TableHead className="min-w-40 pr-5">Progres</TableHead></TableRow></TableHeader>
+              <TableHeader><TableRow className="bg-slate-50"><TableHead className="min-w-48 pl-5">Jenis</TableHead><TableHead>Target</TableHead><TableHead>Diterima</TableHead><TableHead>Kurang diterima</TableHead><TableHead>Terpasang</TableHead><TableHead>Sisa pasang</TableHead><TableHead className="min-w-40 pr-5">Progres</TableHead></TableRow></TableHeader>
               <TableBody>
-                {phaseOnePlants.map((plant) => {
-                  const received = delivered.get(plant.name) || 0;
-                  const placed = installed.get(plant.name) || 0;
+                {scope.plants.map((plant) => {
+                  const name = normalizePlantName(plant.name);
+                  const received = delivered.get(name) || 0;
+                  const placed = installed.get(name) || 0;
                   const progress = Math.min(100, plant.quantity ? placed / plant.quantity * 100 : 0);
                   return (
-                    <TableRow key={plant.name}>
-                      <TableCell className="pl-5"><strong className="text-sm">{plant.name}</strong><span className="mt-0.5 block text-[11px] text-[#232b2b]">{plant.unit}</span></TableCell>
+                    <TableRow key={`${name}-${plant.unit}`}>
+                      <TableCell className="pl-5"><strong className="text-sm">{name}</strong><span className="mt-0.5 block text-[11px] text-[#232b2b]">{plant.unit}</span></TableCell>
                       <TableCell className="font-mono text-xs">{formatNumber(plant.quantity)}</TableCell>
                       <TableCell className="font-mono text-xs">{formatNumber(received)}</TableCell>
+                      <TableCell className="font-mono text-xs">{formatNumber(Math.max(0, plant.quantity - received))}</TableCell>
                       <TableCell className="font-mono text-xs">{formatNumber(placed)}</TableCell>
                       <TableCell className="font-mono text-xs">{formatNumber(Math.max(0, plant.quantity - placed))}</TableCell>
                       <TableCell className="pr-5"><div className="flex items-center gap-2"><Progress value={progress} className="h-2 min-w-20 bg-slate-200 [&_[data-slot=progress-indicator]]:bg-[#50b8e7]" /><span className="w-11 text-right font-mono text-[11px]">{progress.toFixed(1)}%</span></div></TableCell>
@@ -665,12 +882,119 @@ function PhaseOneRecap({
         </CardContent>
       </Card>
 
-      <Card className="rounded-md border-[#e5a3a3] bg-[#fffafa] shadow-none">
+      <Card className="min-w-0 rounded-md border-[#e5a3a3] bg-[#fffafa] shadow-none">
         <CardContent className="flex flex-col gap-3 px-5 py-5 sm:flex-row sm:items-center sm:justify-between">
-          <div><p className="font-semibold">Volume tanah Tahap 1 menunggu hasil ukur.</p><p className="mt-1 text-sm text-[#232b2b]">Rit rencana dihitung dari volume final ÷ 7 m³ dan pengiriman dicatat bertahap setiap hari.</p></div>
-          <Badge variant="outline" className="w-fit rounded-sm border-[#e5a3a3] bg-white">Belum ditetapkan</Badge>
+          <div><p className="font-semibold">{soilTarget == null ? "Volume tanah Tahap 1 menunggu hasil ukur." : `Kebutuhan tanah ${scope.code}: ${formatNumber(soilTarget)} m³.`}</p><p className="mt-1 text-sm text-[#232b2b]">Rit rencana dihitung dengan dump truck 7 m³ dan pengiriman dicatat bertahap setiap hari.</p></div>
+          <Badge variant="outline" className="w-fit rounded-sm border-[#e5a3a3] bg-white">{soilTarget == null ? "Belum ditetapkan" : `${Math.ceil(soilTarget / truckCapacity)} rit`}</Badge>
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+function RequirementStat({ label, value, warning = false }: { label: string; value: string; warning?: boolean }) {
+  return <div className={cx("min-w-0 rounded-sm border p-3", warning ? "border-[#e5a3a3] bg-[#fff6f6]" : "border-slate-200 bg-white")}><span className="block text-[10px] font-bold uppercase tracking-wider text-[#232b2b]">{label}</span><strong className="mt-1 block break-words font-serif text-lg">{value}</strong></div>;
+}
+
+function SmallStat({ label, value, warning = false }: { label: string; value: number; warning?: boolean }) {
+  return <div className={cx("min-w-0 rounded-sm px-2 py-2", warning ? "bg-[#faeaea]" : "bg-slate-50")}><span className="block text-[9px] uppercase tracking-wide text-[#232b2b]">{label}</span><strong className="mt-1 block truncate font-mono text-xs">{formatNumber(value)}</strong></div>;
+}
+
+function UserDashboard() {
+  const [user, setUser] = useState<User | null>(null);
+  const [email, setEmail] = useState("");
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const configured = isSupabaseConfigured();
+
+  useEffect(() => {
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+    supabase.auth.getSession().then(({ data }) => setUser(data.session?.user || null));
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => setUser(session?.user || null));
+    return () => data.subscription.unsubscribe();
+  }, []);
+
+  const sendMagicLink = async (event: FormEvent) => {
+    event.preventDefault();
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      setMessage("Supabase belum tersambung. Tambahkan URL dan public anon key di GitHub Actions.");
+      return;
+    }
+    setBusy(true);
+    setMessage("");
+    const { error } = await supabase.auth.signInWithOtp({
+      email: email.trim(),
+      options: { emailRedirectTo: window.location.origin },
+    });
+    setBusy(false);
+    setMessage(error ? error.message : "Link masuk sudah dikirim. Buka email di perangkat ini.");
+  };
+
+  const signOut = async () => {
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+    setBusy(true);
+    await supabase.auth.signOut();
+    setBusy(false);
+  };
+
+  return (
+    <div className="mx-auto max-w-4xl space-y-5">
+      <div>
+        <p className="eyebrow">Dashboard pengguna</p>
+        <h1 className="page-title">Akun Project Control</h1>
+        <p className="mt-2 text-sm leading-6 text-[#232b2b]">Satu tempat untuk identitas pengguna, status akses, dan koneksi data proyek.</p>
+      </div>
+
+      <Card className="min-w-0 overflow-hidden rounded-md border-slate-200 shadow-none">
+        <CardContent className="flex min-w-0 flex-col gap-4 py-5 sm:flex-row sm:items-center">
+          <div className="grid size-16 shrink-0 place-items-center rounded-full bg-[#17365d] font-serif text-xl font-bold text-white">
+            {user?.email?.slice(0, 2).toUpperCase() || "PC"}
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="font-serif text-xl font-semibold">{user ? "Pengguna Aktif" : "Project Control & Administrasi"}</p>
+            <p className="mt-1 break-all text-sm text-[#232b2b]">{user?.email || "Belum masuk dengan akun Supabase"}</p>
+            <div className="mt-3 flex flex-wrap gap-2"><Badge className="rounded-sm bg-[#17365d]">Nurfita</Badge><Badge variant="outline" className="rounded-sm">Lapangan</Badge><Badge variant="outline" className="rounded-sm">Laporan HK</Badge></div>
+          </div>
+          <Badge variant="outline" className={cx("w-fit rounded-sm px-3 py-2", configured ? "border-[#50b8e7] bg-[#eef9fd]" : "border-[#e5a3a3] bg-[#fff6f6]")}>
+            {configured ? "Supabase siap" : "Mode pratinjau"}
+          </Badge>
+        </CardContent>
+      </Card>
+
+      <div className="grid gap-5 md:grid-cols-[minmax(0,1fr)_minmax(260px,.75fr)]">
+        <Card className="min-w-0 overflow-hidden rounded-md border-slate-200 shadow-none">
+          <CardHeader className="border-b border-slate-100 px-4 sm:px-6">
+            <CardTitle className="font-serif text-xl">{user ? "Sesi Pengguna" : "Masuk Tanpa Password"}</CardTitle>
+            <CardDescription>{user ? "Akun ini siap dipakai untuk mengakses data proyek." : "Masukkan email, lalu sistem mengirim link masuk yang aman."}</CardDescription>
+          </CardHeader>
+          <CardContent className="min-w-0 px-4 sm:px-6">
+            {user ? (
+              <div className="space-y-4">
+                <div className="rounded-sm border border-[#50b8e7] bg-[#eef9fd] p-4 text-sm leading-6"><ShieldCheck className="mr-2 inline size-4" />Sesi login aktif pada perangkat ini.</div>
+                <Button type="button" variant="outline" disabled={busy} onClick={signOut} className="min-h-12 w-full rounded-sm"><LogIn className="size-4 rotate-180" /> Keluar akun</Button>
+              </div>
+            ) : (
+              <form onSubmit={sendMagicLink} className="space-y-4">
+                <Field label="Email pengguna">
+                  <div className="relative min-w-0"><Mail className="pointer-events-none absolute left-3 top-1/2 z-10 size-4 -translate-y-1/2 text-[#232b2b]" /><Input type="email" value={email} onChange={(event) => setEmail(event.target.value)} className="field-control pl-10" placeholder="nama@perusahaan.com" required /></div>
+                </Field>
+                <Button type="submit" disabled={busy || !configured} className="min-h-12 w-full rounded-sm bg-[#17365d] hover:bg-[#102946]"><Mail className="size-4" /> {busy ? "Mengirim…" : "Kirim link masuk"}</Button>
+                {message && <div className="rounded-sm border border-slate-200 bg-slate-50 p-3 text-sm leading-5">{message}</div>}
+              </form>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="min-w-0 rounded-md border-slate-200 shadow-none">
+          <CardHeader className="border-b border-slate-100 px-4 sm:px-6"><CardTitle className="font-serif text-xl">Akses Disiapkan</CardTitle><CardDescription>Menu pengguna setelah login.</CardDescription></CardHeader>
+          <CardContent className="space-y-3 px-4 sm:px-6">
+            {["Input dan koreksi laporan harian", "Rekap kebutuhan per area", "Dokumentasi foto lapangan", "Cetak laporan untuk HK"].map((item) => <div key={item} className="flex gap-3 border-b border-slate-100 pb-3 text-sm last:border-0 last:pb-0"><ShieldCheck className="mt-0.5 size-4 shrink-0 text-[#50b8e7]" /><span>{item}</span></div>)}
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }
