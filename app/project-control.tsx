@@ -9,9 +9,7 @@ import {
   FileText,
   FolderOpen,
   ImageIcon,
-  LogIn,
   Loader2,
-  Mail,
   MapPinned,
   Plus,
   Printer,
@@ -22,7 +20,6 @@ import {
   UserRound,
 } from "lucide-react";
 import Image from "next/image";
-import type { User } from "@supabase/supabase-js";
 import {
   CartesianGrid,
   Line,
@@ -34,6 +31,8 @@ import {
 } from "recharts";
 import { Badge } from "@/components/ui/badge";
 import { BrandLogo } from "@/components/brand-logo";
+import { LoginScreen } from "@/components/auth/login-screen";
+import { UserDashboard } from "@/components/auth/user-dashboard";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -71,7 +70,8 @@ import {
   subscribeEntries,
   type StoredEntry,
 } from "@/lib/client-storage";
-import { getSupabaseClient, isSupabaseConfigured } from "@/lib/supabase-client";
+import { canAccessTab, initials } from "@/lib/auth";
+import { useProjectAuth } from "@/hooks/use-project-auth";
 
 type TabValue = "dashboard" | "input" | "recap" | "report" | "account";
 type IconType = typeof BarChart3;
@@ -210,6 +210,9 @@ function Metric({
 export default function ProjectControl() {
   const [active, setActive] = useState<TabValue>("dashboard");
   const [entries, setEntries] = useState<StoredEntry[]>([]);
+  const auth = useProjectAuth();
+  const roleLevel = auth.profile?.role_level || 5;
+  const visibleNavItems = navItems.filter((item) => canAccessTab(roleLevel, item.value));
 
   useEffect(() => {
     const sync = () => setEntries(readEntries());
@@ -246,8 +249,15 @@ export default function ProjectControl() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const current = [...navItems, accountNavItem].find((item) => item.value === active) || navItems[0];
+  const effectiveActive: TabValue = canAccessTab(roleLevel, active) ? active : roleLevel === 1 ? "report" : "dashboard";
+  const current = [...visibleNavItems, accountNavItem].find((item) => item.value === effectiveActive) || visibleNavItems[0] || accountNavItem;
   const CurrentIcon = current.icon;
+
+  if (auth.configured && auth.loading) {
+    return <main className="grid min-h-screen place-items-center bg-[#f4f3ef]"><div className="text-center"><BrandLogo className="mx-auto h-12 w-24" priority /><Loader2 className="mx-auto mt-5 size-6 animate-spin text-[#17365d]" /><p className="mt-3 text-sm text-[#232b2b]">Memeriksa akses pengguna…</p></div></main>;
+  }
+
+  if (auth.configured && (!auth.user || !auth.profile?.active)) return <LoginScreen />;
 
   return (
     <div className="min-h-screen bg-[#f4f3ef] text-[#0e1111] lg:grid lg:grid-cols-[260px_minmax(0,1fr)]">
@@ -262,14 +272,14 @@ export default function ProjectControl() {
         <div className="flex-1 py-5">
           <p className="mb-3 px-3 text-[11px] font-bold uppercase tracking-[0.14em] text-[#232b2b]">Menu lapangan</p>
           <nav className="space-y-1">
-            {navItems.map((item) => (
+            {visibleNavItems.map((item) => (
               <button
                 key={item.value}
                 type="button"
                 onClick={() => go(item.value)}
                 className={cx(
                   "flex h-12 w-full items-center gap-3 rounded-sm px-3 text-left text-sm font-semibold transition-colors",
-                  active === item.value ? "bg-[#e9eef4] text-[#0e1111]" : "text-[#232b2b] hover:bg-slate-50",
+                  effectiveActive === item.value ? "bg-[#e9eef4] text-[#0e1111]" : "text-[#232b2b] hover:bg-slate-50",
                 )}
               >
                 <item.icon className="size-[18px]" /> {item.label}
@@ -312,11 +322,11 @@ export default function ProjectControl() {
                 onClick={() => go("account")}
                 className={cx(
                   "grid size-11 place-items-center rounded-full border text-sm font-bold",
-                  active === "account" ? "border-[#17365d] bg-[#17365d] text-white" : "border-slate-300 bg-white text-[#0e1111]",
+                  effectiveActive === "account" ? "border-[#17365d] bg-[#17365d] text-white" : "border-slate-300 bg-white text-[#0e1111]",
                 )}
                 aria-label="Buka dashboard pengguna"
               >
-                PC
+                {initials(auth.profile?.full_name, auth.profile?.email)}
               </button>
             </div>
           </div>
@@ -325,10 +335,10 @@ export default function ProjectControl() {
         <main className="min-w-0 space-y-5 p-4 pb-28 sm:p-6 lg:p-8 lg:pb-8">
           <div className="rounded-sm border border-[#50b8e7] bg-[#eef9fd] px-4 py-3 text-sm leading-6">
             <ShieldCheck className="mr-2 inline size-4" />
-            Versi uji lapangan aktif. Data tersimpan di perangkat ini dan dapat dicetak menjadi laporan HK.
+            {auth.configured ? `Akses aktif · Level ${roleLevel}. Data tampil sesuai hak akses pengguna.` : "Mode pratinjau aktif. Login produksi menunggu publishable key Supabase."}
           </div>
 
-          {active === "dashboard" && (
+          {effectiveActive === "dashboard" && (
             <Dashboard
               entries={entries}
               plan={plan}
@@ -342,22 +352,22 @@ export default function ProjectControl() {
               onInput={() => go("input")}
             />
           )}
-          {active === "input" && <DailyInput onSaved={(entry) => { setEntries((currentEntries) => [entry, ...currentEntries]); go("dashboard"); }} />}
-          {active === "recap" && <PhaseOneRecap entries={entries} delivered={delivered} installed={installed} />}
-          {active === "report" && <HKReport entries={entries.filter((entry) => entry.hkVisible)} plan={plan} actual={actual} />}
-          {active === "account" && <UserDashboard />}
+          {effectiveActive === "input" && <DailyInput onSaved={(entry) => { setEntries((currentEntries) => [entry, ...currentEntries]); go("dashboard"); }} />}
+          {effectiveActive === "recap" && <PhaseOneRecap entries={entries} delivered={delivered} installed={installed} />}
+          {effectiveActive === "report" && <HKReport entries={entries.filter((entry) => entry.hkVisible)} plan={plan} actual={actual} />}
+          {effectiveActive === "account" && <UserDashboard configured={auth.configured} profile={auth.profile} />}
         </main>
       </section>
 
-      <nav className="print-hidden fixed inset-x-0 bottom-0 z-50 grid grid-cols-4 border-t border-slate-200 bg-white/98 px-1 pb-[max(.4rem,env(safe-area-inset-bottom))] pt-1 shadow-[0_-6px_20px_rgba(15,23,42,.08)] lg:hidden">
-        {navItems.map((item) => (
+      <nav className="print-hidden fixed inset-x-0 bottom-0 z-50 grid border-t border-slate-200 bg-white/98 px-1 pb-[max(.4rem,env(safe-area-inset-bottom))] pt-1 shadow-[0_-6px_20px_rgba(15,23,42,.08)] lg:hidden" style={{ gridTemplateColumns: `repeat(${Math.max(1, visibleNavItems.length)}, minmax(0, 1fr))` }}>
+        {visibleNavItems.map((item) => (
           <button
             key={item.value}
             type="button"
             onClick={() => go(item.value)}
             className={cx(
               "flex min-h-14 flex-col items-center justify-center gap-1 rounded-sm px-1 text-[10px] font-semibold",
-              active === item.value ? "bg-[#e9eef4] text-[#0e1111]" : "text-[#232b2b]",
+              effectiveActive === item.value ? "bg-[#e9eef4] text-[#0e1111]" : "text-[#232b2b]",
             )}
           >
             <item.icon className="size-5" /> {item.label}
@@ -898,105 +908,6 @@ function RequirementStat({ label, value, warning = false }: { label: string; val
 
 function SmallStat({ label, value, warning = false }: { label: string; value: number; warning?: boolean }) {
   return <div className={cx("min-w-0 rounded-sm px-2 py-2", warning ? "bg-[#faeaea]" : "bg-slate-50")}><span className="block text-[9px] uppercase tracking-wide text-[#232b2b]">{label}</span><strong className="mt-1 block truncate font-mono text-xs">{formatNumber(value)}</strong></div>;
-}
-
-function UserDashboard() {
-  const [user, setUser] = useState<User | null>(null);
-  const [email, setEmail] = useState("");
-  const [message, setMessage] = useState("");
-  const [busy, setBusy] = useState(false);
-  const configured = isSupabaseConfigured();
-
-  useEffect(() => {
-    const supabase = getSupabaseClient();
-    if (!supabase) return;
-    supabase.auth.getSession().then(({ data }) => setUser(data.session?.user || null));
-    const { data } = supabase.auth.onAuthStateChange((_event, session) => setUser(session?.user || null));
-    return () => data.subscription.unsubscribe();
-  }, []);
-
-  const sendMagicLink = async (event: FormEvent) => {
-    event.preventDefault();
-    const supabase = getSupabaseClient();
-    if (!supabase) {
-      setMessage("Supabase belum tersambung. Tambahkan URL dan public anon key di GitHub Actions.");
-      return;
-    }
-    setBusy(true);
-    setMessage("");
-    const { error } = await supabase.auth.signInWithOtp({
-      email: email.trim(),
-      options: { emailRedirectTo: window.location.origin },
-    });
-    setBusy(false);
-    setMessage(error ? error.message : "Link masuk sudah dikirim. Buka email di perangkat ini.");
-  };
-
-  const signOut = async () => {
-    const supabase = getSupabaseClient();
-    if (!supabase) return;
-    setBusy(true);
-    await supabase.auth.signOut();
-    setBusy(false);
-  };
-
-  return (
-    <div className="mx-auto max-w-4xl space-y-5">
-      <div>
-        <p className="eyebrow">Dashboard pengguna</p>
-        <h1 className="page-title">Akun Project Control</h1>
-        <p className="mt-2 text-sm leading-6 text-[#232b2b]">Satu tempat untuk identitas pengguna, status akses, dan koneksi data proyek.</p>
-      </div>
-
-      <Card className="min-w-0 overflow-hidden rounded-md border-slate-200 shadow-none">
-        <CardContent className="flex min-w-0 flex-col gap-4 py-5 sm:flex-row sm:items-center">
-          <div className="grid size-16 shrink-0 place-items-center rounded-full bg-[#17365d] font-serif text-xl font-bold text-white">
-            {user?.email?.slice(0, 2).toUpperCase() || "PC"}
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="font-serif text-xl font-semibold">{user ? "Pengguna Aktif" : "Project Control & Administrasi"}</p>
-            <p className="mt-1 break-all text-sm text-[#232b2b]">{user?.email || "Belum masuk dengan akun Supabase"}</p>
-            <div className="mt-3 flex flex-wrap gap-2"><Badge className="rounded-sm bg-[#17365d]">Nurfita</Badge><Badge variant="outline" className="rounded-sm">Lapangan</Badge><Badge variant="outline" className="rounded-sm">Laporan HK</Badge></div>
-          </div>
-          <Badge variant="outline" className={cx("w-fit rounded-sm px-3 py-2", configured ? "border-[#50b8e7] bg-[#eef9fd]" : "border-[#e5a3a3] bg-[#fff6f6]")}>
-            {configured ? "Supabase siap" : "Mode pratinjau"}
-          </Badge>
-        </CardContent>
-      </Card>
-
-      <div className="grid gap-5 md:grid-cols-[minmax(0,1fr)_minmax(260px,.75fr)]">
-        <Card className="min-w-0 overflow-hidden rounded-md border-slate-200 shadow-none">
-          <CardHeader className="border-b border-slate-100 px-4 sm:px-6">
-            <CardTitle className="font-serif text-xl">{user ? "Sesi Pengguna" : "Masuk Tanpa Password"}</CardTitle>
-            <CardDescription>{user ? "Akun ini siap dipakai untuk mengakses data proyek." : "Masukkan email, lalu sistem mengirim link masuk yang aman."}</CardDescription>
-          </CardHeader>
-          <CardContent className="min-w-0 px-4 sm:px-6">
-            {user ? (
-              <div className="space-y-4">
-                <div className="rounded-sm border border-[#50b8e7] bg-[#eef9fd] p-4 text-sm leading-6"><ShieldCheck className="mr-2 inline size-4" />Sesi login aktif pada perangkat ini.</div>
-                <Button type="button" variant="outline" disabled={busy} onClick={signOut} className="min-h-12 w-full rounded-sm"><LogIn className="size-4 rotate-180" /> Keluar akun</Button>
-              </div>
-            ) : (
-              <form onSubmit={sendMagicLink} className="space-y-4">
-                <Field label="Email pengguna">
-                  <div className="relative min-w-0"><Mail className="pointer-events-none absolute left-3 top-1/2 z-10 size-4 -translate-y-1/2 text-[#232b2b]" /><Input type="email" value={email} onChange={(event) => setEmail(event.target.value)} className="field-control pl-10" placeholder="nama@perusahaan.com" required /></div>
-                </Field>
-                <Button type="submit" disabled={busy || !configured} className="min-h-12 w-full rounded-sm bg-[#17365d] hover:bg-[#102946]"><Mail className="size-4" /> {busy ? "Mengirim…" : "Kirim link masuk"}</Button>
-                {message && <div className="rounded-sm border border-slate-200 bg-slate-50 p-3 text-sm leading-5">{message}</div>}
-              </form>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card className="min-w-0 rounded-md border-slate-200 shadow-none">
-          <CardHeader className="border-b border-slate-100 px-4 sm:px-6"><CardTitle className="font-serif text-xl">Akses Disiapkan</CardTitle><CardDescription>Menu pengguna setelah login.</CardDescription></CardHeader>
-          <CardContent className="space-y-3 px-4 sm:px-6">
-            {["Input dan koreksi laporan harian", "Rekap kebutuhan per area", "Dokumentasi foto lapangan", "Cetak laporan untuk HK"].map((item) => <div key={item} className="flex gap-3 border-b border-slate-100 pb-3 text-sm last:border-0 last:pb-0"><ShieldCheck className="mt-0.5 size-4 shrink-0 text-[#50b8e7]" /><span>{item}</span></div>)}
-          </CardContent>
-        </Card>
-      </div>
-    </div>
-  );
 }
 
 function HKReport({ entries, plan, actual }: { entries: StoredEntry[]; plan: number; actual: number }) {
