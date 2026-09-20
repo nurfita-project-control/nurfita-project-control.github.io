@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Nurfita Project Control",
-  description: "Sistem pengendalian progres, laporan, dan biaya proyek landscape PT Nurfita Karya Mandiri.",
+  description: "Sistem laporan lapangan dan monitoring progres landscape PT Nurfita Karya Mandiri.",
   other: {
     "application-name": "Nurfita Project Control",
   },

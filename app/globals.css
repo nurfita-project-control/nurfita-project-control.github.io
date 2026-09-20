@@ -88,7 +88,10 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: Inter, "Segoe UI", Arial, Helvetica, sans-serif;
+  -webkit-tap-highlight-color: transparent;
 }
+.field-control { min-height: 3rem; border-radius: 0.2rem; font-size: 1rem; }
+button, a, input, select, textarea { touch-action: manipulation; }
 .font-serif { font-family: Georgia, "Times New Roman", serif; }
 .eyebrow {
   color: #232b2b;
@@ -140,4 +143,10 @@ body {
   .report-sheet { border: 0 !important; padding: 0 !important; }
   .report-sheet table { font-size: 9px; }
   .report-sheet tr, .report-sheet figure { break-inside: avoid; }
+}
+
+@media (max-width: 639px) {
+  .report-sheet { padding: 1rem; }
+  .report-kpi { padding: 0.65rem 0.75rem; }
+  .report-kpi strong { font-size: 0.95rem; line-height: 1.25; }
 }
