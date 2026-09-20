@@ -673,12 +673,12 @@ function DailyInput({ onSaved }: { onSaved: (entry: StoredEntry) => void }) {
                 <label className="flex min-h-20 min-w-0 cursor-pointer flex-col items-center justify-center gap-2 rounded-sm border border-slate-300 bg-slate-50 px-2 py-3 text-center text-xs font-semibold">
                   <Camera className="size-5" />
                   Ambil kamera
-                  <Input type="file" accept="image/*" capture="environment" className="sr-only" onChange={(event) => setPhoto(event.target.files?.[0] || null)} />
+                  <Input type="file" accept="image/*" capture="environment" className="absolute h-px w-px overflow-hidden opacity-0" onChange={(event) => setPhoto(event.target.files?.[0] || null)} />
                 </label>
                 <label className="flex min-h-20 min-w-0 cursor-pointer flex-col items-center justify-center gap-2 rounded-sm border border-slate-300 bg-slate-50 px-2 py-3 text-center text-xs font-semibold">
                   <FolderOpen className="size-5" />
                   Pilih galeri / file
-                  <Input type="file" accept="image/jpeg,image/png,image/webp" className="sr-only" onChange={(event) => setPhoto(event.target.files?.[0] || null)} />
+                  <Input type="file" accept="image/jpeg,image/png,image/webp" className="absolute h-px w-px overflow-hidden opacity-0" onChange={(event) => setPhoto(event.target.files?.[0] || null)} />
                 </label>
               </div>
               <div className="min-w-0 rounded-sm bg-[#eef9fd] px-3 py-2 text-xs leading-5 text-[#232b2b]">
